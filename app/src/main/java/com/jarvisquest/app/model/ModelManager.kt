@@ -2,14 +2,6 @@ package com.jarvisquest.app.model
 
 import android.content.Context
 import java.io.File
-import java.io.BufferedInputStream
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 sealed class ModelStatus {
     data class Ready(val path: String, val sizeBytes: Long) : ModelStatus()
@@ -39,13 +31,6 @@ class ModelManager(context: Context) {
     private val minPlausibleWhisperBytes = 20_000_000L // ggml-base.bin is ~142 MB; even ggml-tiny is ~75 MB.
 
     fun checkWhisperModel(): ModelStatus {
-        if (!modelFile.exists() || modelFile.length() < minPlausibleWhisperBytes) {
-            CoroutineScope(Dispatchers.IO).launch {
-                downloadWhisperModel()
-            }
-        }
-
-
         return if (whisperModelFile.exists() && whisperModelFile.length() >= minPlausibleWhisperBytes) {
             ModelStatus.Ready(whisperModelFile.absolutePath, whisperModelFile.length())
         } else {
@@ -59,60 +44,4 @@ class ModelManager(context: Context) {
         // for the reasoning and the ggml-small upgrade path.
         const val WHISPER_MODEL_FILENAME = "ggml-base.bin"
     }
-
-
-    suspend fun downloadWhisperModel(
-        onProgress: (percent: Int) -> Unit = {}
-    ): Boolean = withContext(Dispatchers.IO) {
-        if (modelFile.exists() && modelFile.length() >= minPlausibleWhisperBytes) {
-            return@withContext true
-        }
-
-        modelDirectory.mkdirs()
-
-        val url = URL(
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-        )
-
-        val connection = url.openConnection() as HttpURLConnection
-        connection.connectTimeout = 30_000
-        connection.readTimeout = 60_000
-        connection.requestMethod = "GET"
-
-        try {
-            connection.connect()
-
-            if (connection.responseCode !in 200..299) {
-                return@withContext false
-            }
-
-            val total = connection.contentLengthLong
-
-            BufferedInputStream(connection.inputStream).use { input ->
-                FileOutputStream(modelFile).use { output ->
-                    val buffer = ByteArray(1024 * 1024)
-                    var downloaded = 0L
-                    var read: Int
-
-                    while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
-                        downloaded += read
-
-                        if (total > 0) {
-                            onProgress(((downloaded * 100) / total).toInt())
-                        }
-                    }
-                }
-            }
-
-            modelFile.exists() &&
-                modelFile.length() >= minPlausibleWhisperBytes
-        } catch (_: Exception) {
-            modelFile.delete()
-            false
-        } finally {
-            connection.disconnect()
-        }
-    }
-
 }
