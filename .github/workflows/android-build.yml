@@ -1,0 +1,55 @@
+name: Build Jarvis Quest APK
+
+# This workflow exists because the sandbox this project was scaffolded in
+# has no Android SDK, no NDK, no Gradle, and no outbound network access
+# (verified: dl.google.com, repo.maven.apache.org and huggingface.co all
+# returned HTTP 403 from that sandbox's egress proxy). GitHub's hosted
+# ubuntu-latest runners have none of those restrictions, which is what
+# makes this the practical "I have no PC" path to a real, compiled,
+# installable APK — trigger this from the GitHub website in a browser,
+# then download the APK from the finished run's Artifacts section.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Ensures the exact compileSdk/build-tools this project needs are
+      # present even if the runner image's preinstalled set doesn't match,
+      # and accepts the SDK licenses non-interactively.
+      - name: Ensure Android SDK components
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0 platform-tools"
+
+      # No Gradle wrapper is checked in (see README — it needs a binary
+      # gradle-wrapper.jar this project couldn't generate offline), so we
+      # install the pinned Gradle version directly instead of using
+      # ./gradlew.
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-quest-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

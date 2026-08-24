@@ -1,0 +1,16 @@
+*.iml
+.gradle/
+.idea/
+local.properties
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+# Model weights are large and fetched separately (see README) — never commit them.
+*.gguf
+*.bin
+app/src/main/assets/models/

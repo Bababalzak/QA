@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fullscreen, no title/action bar, dark background — matches the
+         "large elements, high readability, not a phone-style layout"
+         requirement even before the first Compose frame draws. No
+         dependency on Material Components / AppCompat is needed for this
+         single style, which keeps the dependency list minimal (Section 10). -->
+    <style name="Theme.JarvisQuest" parent="android:Theme.Black.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@color/jarvis_background</item>
+        <item name="android:statusBarColor">@color/jarvis_background</item>
+        <item name="android:navigationBarColor">@color/jarvis_background</item>
+    </style>
+</resources>
