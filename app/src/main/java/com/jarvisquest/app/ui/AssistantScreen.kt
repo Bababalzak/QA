@@ -110,6 +110,9 @@ fun AssistantScreen(
             modifier = Modifier.weight(1.2f),
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
+            uiState.modelWarning?.let {
+                TranscriptCard(title = "Model", body = it, isError = true)
+            }
             TranscriptCard(title = "You said", body = uiState.recognizedSpeech.ifBlank { "—" })
             TranscriptCard(
                 title = "Jarvis",

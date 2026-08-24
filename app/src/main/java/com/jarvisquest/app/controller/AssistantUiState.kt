@@ -8,5 +8,7 @@ data class AssistantUiState(
     val assistantResponse: String = "",
     val latencyReport: String = "",
     val errorMessage: String? = null,
-    val micPermissionGranted: Boolean = false
+    val micPermissionGranted: Boolean = false,
+    /** Non-null when a required model file is missing — shown as a persistent banner, not just after a failed attempt. */
+    val modelWarning: String? = null
 )

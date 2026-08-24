@@ -38,8 +38,19 @@ class AssistantController(
 
     private var captureJob: Job? = null
 
+    // Created the instant VAD reports SpeechStarted so the latency report
+    // covers real speech-start -> speech-end -> STT -> response timing
+    // (Phase 8: "microphone start, speech start, speech end, Whisper
+    // start, Whisper end, total STT latency"), not just the STT portion.
+    private var utteranceLatency: LatencyTracker? = null
+
     fun onMicPermissionResult(granted: Boolean) {
         _uiState.value = _uiState.value.copy(micPermissionGranted = granted)
+    }
+
+    /** Set once at startup from [com.jarvisquest.app.model.ModelManager]'s check — shown as a persistent banner. */
+    fun setModelWarning(message: String?) {
+        _uiState.value = _uiState.value.copy(modelWarning = message)
     }
 
     fun isListening(): Boolean = captureJob?.isActive == true
@@ -89,18 +100,23 @@ class AssistantController(
         when (val event = vad.process(frame)) {
             is VadEvent.Silence -> Unit
             is VadEvent.SpeechStarted -> {
+                utteranceLatency = LatencyTracker().also { it.mark("speech_start") }
                 _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING)
             }
             is VadEvent.SpeechContinuing -> Unit
             is VadEvent.SpeechEnded -> {
+                // Falls back to a fresh tracker if SpeechStarted was somehow
+                // missed (e.g. VAD implementation swapped later) rather than
+                // crashing on a null — the report is just less complete.
+                val latency = (utteranceLatency ?: LatencyTracker()).also { it.mark("speech_end") }
+                utteranceLatency = null
                 val utterance = event.utterance
-                scope.launch { processUtterance(utterance) }
+                scope.launch { processUtterance(utterance, latency) }
             }
         }
     }
 
-    private suspend fun processUtterance(utterance: ShortArray) {
-        val latency = LatencyTracker()
+    private suspend fun processUtterance(utterance: ShortArray, latency: LatencyTracker) {
         latency.mark("stt_start")
         _uiState.value = _uiState.value.copy(state = AssistantState.THINKING)
 
@@ -113,9 +129,7 @@ class AssistantController(
                 state = AssistantState.LISTENING,
                 recognizedSpeech = "",
                 assistantResponse = error.message ?: "Speech-to-text failed.",
-                latencyReport = latency.summary(
-                    listOf("STT" to ("stt_start" to "stt_end"))
-                )
+                latencyReport = buildLatencyReport(latency)
             )
             return
         }
@@ -178,6 +192,9 @@ class AssistantController(
 
     private fun buildLatencyReport(latency: LatencyTracker): String {
         val stages = buildList {
+            if (latency.durationMs("speech_start", "speech_end") != null) {
+                add("Speech" to ("speech_start" to "speech_end"))
+            }
             add("STT" to ("stt_start" to "stt_end"))
             add("Router" to ("router_start" to "router_end"))
             if (latency.durationMs("llm_start", "llm_end") != null) {

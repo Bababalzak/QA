@@ -10,6 +10,11 @@ android {
     // compileSdk 35 = Android 15 platform stubs, used only at build time.
     compileSdk = 35
 
+    // Pinned so CI and any local Android Studio build resolve the exact
+    // same NDK — must match the `ndk;...` package installed in
+    // .github/workflows/android-build.yml.
+    ndkVersion = "27.2.12479018"
+
     defaultConfig {
         applicationId = "com.jarvisquest.app"
 
@@ -20,13 +25,34 @@ android {
         minSdk = 29
         targetSdk = 34
 
-        versionCode = 1
-        versionName = "0.1.0-milestone1"
+        versionCode = 2
+        versionName = "0.2.0-milestone2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // No GMS, no Play Services dependency anywhere in this module.
         vectorDrawables { useSupportLibrary = true }
+
+        // Quest 3 is ARM64-only — no reason to build/ship armeabi-v7a,
+        // x86, or x86_64 native libs. Also shrinks the APK now that
+        // libjarvis_whisper.so + libwhisper.so are part of the build.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
@@ -87,10 +113,10 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 
-    // Deliberately NOT included in Milestone 1:
+    // Deliberately still NOT included as of Milestone 2:
     //  - any com.google.android.gms:* artifact (Quest ships without GMS)
-    //  - llama.cpp / GGUF loader (arrives with the AIService real
-    //    implementation in Milestone 3, together with the NDK/CMake setup)
-    //  - whisper.cpp JNI (arrives in Milestone 2, replacing
-    //    AndroidSpeechToTextService as the default)
+    //  - llama.cpp / GGUF loader (Milestone 3 — see CMakeLists.txt comment)
+    // whisper.cpp itself is a native (C++/CMake) dependency, not a Maven
+    // artifact — see src/main/cpp/CMakeLists.txt and the
+    // app/src/main/cpp/third_party/whisper.cpp git submodule.
 }
