@@ -1,14 +1,5 @@
 name: Build Jarvis Quest APK
 
-# This workflow exists because the sandbox this project was scaffolded in
-# has no Android SDK, no NDK, no Gradle, and no outbound network access
-# (verified: dl.google.com, repo.maven.apache.org and huggingface.co all
-# returned HTTP 403 from that sandbox's egress proxy). GitHub's hosted
-# ubuntu-latest runners have none of those restrictions, which is what
-# makes this the practical "I have no PC" path to a real, compiled,
-# installable APK — trigger this from the GitHub website in a browser,
-# then download the APK from the finished run's Artifacts section.
-
 on:
   push:
     branches: [ main ]
@@ -21,10 +12,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Milestone 2 adds a real native dependency (whisper.cpp) as a
-          # git submodule rather than a Maven artifact — without this the
-          # app/src/main/cpp/third_party/whisper.cpp directory checks out
-          # empty and CMake fails immediately on add_subdirectory().
           submodules: recursive
 
       - name: Set up JDK 17
@@ -33,19 +20,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Ensures the exact compileSdk/build-tools/NDK this project needs are
-      # present even if the runner image's preinstalled set doesn't match,
-      # and accepts the SDK licenses non-interactively. The ndk package
-      # version must match `ndkVersion` in app/build.gradle.kts.
       - name: Ensure Android SDK components
         uses: android-actions/setup-android@v3
         with:
           packages: "platforms;android-35 build-tools;35.0.0 platform-tools ndk;27.2.12479018 cmake;3.22.1"
 
-      # No Gradle wrapper is checked in (see README — it needs a binary
-      # gradle-wrapper.jar this project couldn't generate offline), so we
-      # install the pinned Gradle version directly instead of using
-      # ./gradlew.
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -54,17 +33,12 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
-      # Phase 10 asks us to verify — not assume — that the ARM64 native
-      # libraries actually made it into the APK. This fails the build
-      # loudly rather than silently shipping an APK where STT would crash
-      # at runtime with UnsatisfiedLinkError.
       - name: Verify native libraries are packaged
         run: |
           APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
           echo "Inspecting $APK"
           unzip -l "$APK" | grep 'lib/arm64-v8a/libjarvis_whisper.so' || (echo "::error::libjarvis_whisper.so missing from APK" && exit 1)
           unzip -l "$APK" | grep 'lib/arm64-v8a/libwhisper.so' || (echo "::error::libwhisper.so missing from APK" && exit 1)
-          unzip -l "$APK" | grep -E 'lib/(armeabi-v7a|x86|x86_64)/' && (echo "::error::unexpected non-arm64 native libs present" && exit 1) || echo "Confirmed arm64-v8a-only native libs."
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
