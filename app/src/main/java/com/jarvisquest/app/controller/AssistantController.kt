@@ -24,7 +24,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 private const val TAG = "JarvisAssistant"
-private const val PARTIAL_INTERVAL_FRAMES = 45 // 900 ms
+private const val PARTIAL_INTERVAL_FRAMES = 60 // 1.2 s
 
 class AssistantController(
     private val audioService: AudioService,
@@ -115,6 +115,9 @@ class AssistantController(
             is VadEvent.SpeechContinuing -> {
                 liveSpeechFrames.add(frame)
                 framesSincePartial++
+                // Do not queue a second Whisper decode while one is still running.
+                // A slow decode used to stack behind the native mutex and could make
+                // the final transcript appear tens of seconds late.
                 if (framesSincePartial >= PARTIAL_INTERVAL_FRAMES && partialJob?.isActive != true) {
                     framesSincePartial = 0
                     launchPartialTranscription()
@@ -124,17 +127,20 @@ class AssistantController(
                 val latency = (utteranceLatency ?: LatencyTracker()).also { it.mark("speech_end") }
                 utteranceLatency = null
                 liveSpeechFrames.add(frame)
-                // The rolling partial path is the fast path: if it already has
-                // text, publish and route it immediately instead of running a
-                // second full utterance transcription that can take tens of seconds.
                 val fastTranscript = lastPartialTranscript.trim()
-                resetLiveSpeech()
+                // Never start a second full Whisper pass while a partial decode is
+                // still running. The old implementation could block on nativeLock.
                 if (fastTranscript.isNotBlank()) {
+                    partialJob?.cancel()
+                    resetLiveSpeech()
                     latency.mark("stt_start"); latency.mark("stt_end")
                     _uiState.value = _uiState.value.copy(recognizedSpeech = fastTranscript, state = AssistantState.THINKING)
                     scope.launch { routeAndRespond(fastTranscript, latency) }
                 } else {
-                    scope.launch { processUtterance(event.utterance, latency) }
+                    val utterance = event.utterance.copyOf()
+                    partialJob?.cancel()
+                    resetLiveSpeech()
+                    scope.launch { processUtterance(utterance, latency) }
                 }
             }
         }
@@ -142,7 +148,7 @@ class AssistantController(
 
     private fun launchPartialTranscription() {
         val snapshot = liveSpeechFrames.flatMapTo(ArrayList()) { it.asIterable() }
-        if (snapshot.size < AUDIO_FRAME_SAMPLES * 6) return
+        if (snapshot.size < AUDIO_FRAME_SAMPLES * 12) return // at least 240 ms
         partialJob = scope.launch {
             val result = stt.transcribePartial(snapshot.toShortArray(), AUDIO_SAMPLE_RATE_HZ)
             result.onSuccess { transcript ->
