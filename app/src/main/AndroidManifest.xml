@@ -1,25 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
-    <!-- Real microphone capture (AudioService / AudioRecord). Requested at
-         runtime in MainActivity, not just declared here. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-
-    <!-- Declared but NOT required: the app must still install and show a
-         clear error state on a device/emulator with no mic, per the
-         graceful-degradation requirement. -->
-    <uses-feature
-        android:name="android.hardware.microphone"
-        android:required="false" />
-
-    <!-- Deliberately no android.permission.INTERNET: Milestone 1 makes no
-         network calls. When the model downloader (Section 13) is built,
-         INTERNET will be added explicitly and only for that feature. -->
-
-    <!-- Quest runs unmodified 2D/"panel" Android apps directly in Horizon
-         Home with a standard LAUNCHER activity — no VR-specific manifest
-         category or Oculus SDK integration is required for a flat panel
-         app like this one. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -27,7 +10,6 @@
         android:theme="@style/Theme.JarvisQuest"
         android:hardwareAccelerated="true"
         android:supportsRtl="true">
-
         <activity
             android:name=".MainActivity"
             android:exported="true"
