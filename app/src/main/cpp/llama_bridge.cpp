@@ -92,7 +92,8 @@ Java_com_jarvisquest_app_ai_LlamaNative_nativeGenerate(JNIEnv *env, jobject, jlo
         const int len = llama_token_to_piece(h->vocab, tok, buf, sizeof(buf), 0, true);
         if (len > 0) result.append(buf, len);
 
-        batch = llama_batch_get_one(&tok, 1);
+        llama_token next_token = tok;
+        batch = llama_batch_get_one(&next_token, 1);
         if (llama_decode(h->ctx, batch) != 0) break;
     }
 
