@@ -16,6 +16,7 @@ import com.jarvisquest.app.stt.SpeechToTextService
 import com.jarvisquest.app.stt.WhisperSpeechToTextService
 import com.jarvisquest.app.router.CommandRouter
 import com.jarvisquest.app.tts.AndroidTextToSpeechService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -51,7 +52,12 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             val allModels = modelDownloader.ensureAllModels()
             allModels.fold(
                 onSuccess = { paths ->
-                    controller.setSpeechToTextService(WhisperSpeechToTextService(paths.first))
+                    val whisper = WhisperSpeechToTextService(paths.first)
+                    controller.setSpeechToTextService(whisper)
+                    // Warm Whisper while the user is looking at the UI so the first
+                    // utterance does not pay the native model initialization cost.
+                    launch(Dispatchers.Default) { whisper.isAvailable() }
+
                     if (qwenModelPath == null) qwenModelPath = paths.second
                     aiService.loadModel().onFailure { error ->
                         controller.setModelWarning("AI-model laden mislukt: ${error.message}")
