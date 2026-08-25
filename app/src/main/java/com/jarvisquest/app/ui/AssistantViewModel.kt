@@ -23,7 +23,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     private val modelManager = ModelManager(application)
     private val modelDownloader = ModelDownloader(application)
 
-    private val stt: SpeechToTextService = when (val status = modelManager.checkWhisperModel()) {
+    private val initialStt: SpeechToTextService = when (val status = modelManager.checkWhisperModel()) {
         is ModelStatus.Ready -> WhisperSpeechToTextService(status.path)
         is ModelStatus.Missing -> ModelMissingSpeechToTextService(status.expectedPath)
     }
@@ -36,7 +36,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     private val controller = AssistantController(
         audioService = AudioService(application),
         vad = EnergyBasedVad(),
-        stt = stt,
+        initialStt = initialStt,
         router = CommandRouter(),
         aiService = aiService,
         tts = AndroidTextToSpeechService(application),
@@ -46,28 +46,24 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     val uiState: StateFlow<AssistantUiState> = controller.uiState
 
     init {
-        val whisper = modelManager.checkWhisperModel()
-        if (whisper is ModelStatus.Missing) {
-            controller.setModelWarning("Whisper model ontbreekt: ${whisper.expectedPath}")
-        }
-
-        if (qwenModelPath != null) {
-            viewModelScope.launch { aiService.loadModel() }
-        } else {
-            controller.setModelWarning("AI-model wordt automatisch gedownload bij de eerste start. Dit kan even duren.")
-            viewModelScope.launch {
-                modelDownloader.ensureQwenModel().fold(
-                    onSuccess = { path ->
-                        qwenModelPath = path
-                        aiService.loadModel().onFailure { error ->
-                            controller.setModelWarning("AI-model laden mislukt: ${error.message}")
-                        }
-                    },
-                    onFailure = { error ->
-                        controller.setModelWarning("AI-model downloaden mislukt: ${error.message}")
+        viewModelScope.launch {
+            controller.setModelWarning("Modellen controleren...")
+            val allModels = modelDownloader.ensureAllModels()
+            allModels.fold(
+                onSuccess = { paths ->
+                    controller.setSpeechToTextService(WhisperSpeechToTextService(paths.first))
+                    if (qwenModelPath == null) qwenModelPath = paths.second
+                    aiService.loadModel().onFailure { error ->
+                        controller.setModelWarning("AI-model laden mislukt: ${error.message}")
                     }
-                )
-            }
+                    if (qwenModelPath != null && controller.uiState.value.modelWarning == "Modellen controleren...") {
+                        controller.setModelWarning(null)
+                    }
+                },
+                onFailure = { error ->
+                    controller.setModelWarning("Model download mislukt: ${error.message}")
+                }
+            )
         }
     }
 
