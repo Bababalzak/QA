@@ -2,7 +2,6 @@
 #include <jni.h>
 #include <android/log.h>
 #include <string>
-#include <vector>
 #include <thread>
 #include <algorithm>
 #include "whisper.h"
@@ -10,6 +9,8 @@
 #define LOG_TAG "JarvisWhisperNative"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+static constexpr int MAX_UTTERANCE_SAMPLES = WHISPER_SAMPLE_RATE * 30;
 
 extern "C" {
 
@@ -56,8 +57,8 @@ Java_com_jarvisquest_app_stt_WhisperNative_nativeTranscribe(
     }
 
     jsize numSamples = env->GetArrayLength(pcmFloat);
-    if (numSamples <= 0) {
-        LOGE("nativeTranscribe: empty PCM buffer");
+    if (numSamples <= 0 || numSamples > MAX_UTTERANCE_SAMPLES) {
+        LOGE("nativeTranscribe: invalid sample count %d (max %d)", numSamples, MAX_UTTERANCE_SAMPLES);
         return nullptr;
     }
 
@@ -90,8 +91,10 @@ Java_com_jarvisquest_app_stt_WhisperNative_nativeTranscribe(
 
     std::string text;
     const int nSegments = whisper_full_n_segments(ctx);
+    LOGI("nativeTranscribe: whisper_full returned %d segments", nSegments);
     for (int i = 0; i < nSegments; ++i) {
-        text += whisper_full_get_segment_text(ctx, i);
+        const char *segment = whisper_full_get_segment_text(ctx, i);
+        if (segment != nullptr) text += segment;
     }
     return env->NewStringUTF(text.c_str());
 }
