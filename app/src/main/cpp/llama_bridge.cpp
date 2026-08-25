@@ -27,20 +27,17 @@ Java_com_jarvisquest_app_ai_LlamaNative_nativeInit(JNIEnv *env, jobject, jstring
     llama_model *model = llama_model_load_from_file(path.c_str(), mp);
     if (!model) { LOGE("Failed to load model: %s", path.c_str()); llama_backend_free(); return 0; }
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 1024; cp.n_batch = 256;
+    cp.n_ctx = 2048; cp.n_batch = 256;
     const unsigned hw = std::thread::hardware_concurrency();
     cp.n_threads = std::max(1, std::min(8, (int)(hw == 0 ? 4 : hw))); cp.n_threads_batch = cp.n_threads;
     llama_context *ctx = llama_init_from_model(model, cp);
     if (!ctx) { llama_model_free(model); llama_backend_free(); return 0; }
     auto *h = new LlamaHandle{model, ctx, llama_model_get_vocab(model)};
-    LOGI("Qwen model loaded; threads=%d", cp.n_threads); return reinterpret_cast<jlong>(h);
+    LOGI("Qwen model loaded; threads=%d ctx=%d", cp.n_threads, (int)llama_n_ctx(ctx)); return reinterpret_cast<jlong>(h);
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_jarvisquest_app_ai_LlamaNative_nativeGenerate(JNIEnv *env, jobject, jlong handle, jstring prompt, jint maxTokens) {
-    auto *h = reinterpret_cast<LlamaHandle *>(handle); if (!h) return nullptr;
-    std::lock_guard<std::mutex> guard(h->mutex);
-    if (!h->ctx || !h->vocab) return nullptr;
+static jstring generate_impl(JNIEnv *env, LlamaHandle *h, jstring prompt, jint maxTokens, jobject callback) {
+    if (!h || !h->ctx || !h->vocab) return nullptr;
     const std::string text = jstr(env, prompt); if (text.empty()) return env->NewStringUTF("");
     std::vector<llama_token> tokens(text.size() + 256);
     const int n = llama_tokenize(h->vocab, text.c_str(), (int)text.size(), tokens.data(), (int)tokens.size(), true, true);
@@ -49,27 +46,51 @@ Java_com_jarvisquest_app_ai_LlamaNative_nativeGenerate(JNIEnv *env, jobject, jlo
     llama_batch batch = llama_batch_get_one(tokens.data(), (int)tokens.size());
     if (llama_decode(h->ctx, batch) != 0) return nullptr;
 
-    // maxTokens == 0 means no application-level output cap. The model stops at
-    // EOS, while llama.cpp's context size remains the hard technical boundary.
-    const int limit = maxTokens > 0 ? maxTokens : 1024;
+    const int remainingContext = std::max(1, (int)llama_n_ctx(h->ctx) - (int)tokens.size());
+    const int limit = maxTokens > 0 ? std::min(maxTokens, remainingContext) : remainingContext;
     std::string result;
-    result.reserve(std::min(limit, 256) * 4);
+    result.reserve(512);
     llama_sampler_chain_params sp = llama_sampler_chain_default_params();
     llama_sampler *sampler = llama_sampler_chain_init(sp);
     if (!sampler) return nullptr;
     llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
 
+    jclass callbackClass = callback ? env->GetObjectClass(callback) : nullptr;
+    jmethodID onToken = callbackClass ? env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)V") : nullptr;
+
     for (int i = 0; i < limit; ++i) {
         llama_token tok = llama_sampler_sample(sampler, h->ctx, -1);
         if (llama_vocab_is_eog(h->vocab, tok)) break;
-        char buf[256];
+        char buf[512];
         const int len = llama_token_to_piece(h->vocab, tok, buf, sizeof(buf), 0, true);
-        if (len > 0) result.append(buf, len);
+        if (len > 0) {
+            result.append(buf, len);
+            if (callback && onToken) {
+                jstring piece = env->NewStringUTF(std::string(buf, len).c_str());
+                env->CallVoidMethod(callback, onToken, piece);
+                env->DeleteLocalRef(piece);
+                if (env->ExceptionCheck()) env->ExceptionClear();
+            }
+        }
         batch = llama_batch_get_one(&tok, 1);
         if (llama_decode(h->ctx, batch) != 0) break;
     }
     llama_sampler_free(sampler);
     return env->NewStringUTF(result.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_jarvisquest_app_ai_LlamaNative_nativeGenerate(JNIEnv *env, jobject, jlong handle, jstring prompt, jint maxTokens) {
+    auto *h = reinterpret_cast<LlamaHandle *>(handle); if (!h) return nullptr;
+    std::lock_guard<std::mutex> guard(h->mutex);
+    return generate_impl(env, h, prompt, maxTokens, nullptr);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_jarvisquest_app_ai_LlamaNative_nativeGenerateStreaming(JNIEnv *env, jobject, jlong handle, jstring prompt, jint maxTokens, jobject callback) {
+    auto *h = reinterpret_cast<LlamaHandle *>(handle); if (!h) return nullptr;
+    std::lock_guard<std::mutex> guard(h->mutex);
+    return generate_impl(env, h, prompt, maxTokens, callback);
 }
 
 extern "C" JNIEXPORT void JNICALL
