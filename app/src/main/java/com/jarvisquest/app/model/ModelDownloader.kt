@@ -12,9 +12,9 @@ import java.nio.file.StandardCopyOption
 class ModelDownloader(private val context: Context) {
     companion object {
         private const val QWEN_URL = "https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf?download=true"
-        private const val WHISPER_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin?download=true"
+        private const val WHISPER_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin?download=true"
         private const val MIN_QWEN_BYTES = 1_000_000_000L
-        private const val MIN_WHISPER_BYTES = 20_000_000L
+        private const val MIN_WHISPER_BYTES = 10_000_000L
     }
 
     private suspend fun download(url: String, target: File, minimumBytes: Long): Result<String> = withContext(Dispatchers.IO) {
@@ -46,20 +46,12 @@ class ModelDownloader(private val context: Context) {
             } finally {
                 connection.disconnect()
             }
-
             if (part.length() < minimumBytes) error("Downloaded file is incomplete (${part.length()} bytes)")
             if (target.exists()) target.delete()
-
-            // File.renameTo() can fail on Android storage even when the download succeeded.
-            // Use the NIO move API and verify the final file before reporting success.
             Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            check(target.exists() && target.length() >= minimumBytes) {
-                "Could not finalize download"
-            }
+            check(target.exists() && target.length() >= minimumBytes) { "Could not finalize download" }
             target.absolutePath
-        }.onFailure {
-            part.delete()
-        }
+        }.onFailure { part.delete() }
     }
 
     suspend fun ensureQwenModel(): Result<String> = withContext(Dispatchers.IO) {
