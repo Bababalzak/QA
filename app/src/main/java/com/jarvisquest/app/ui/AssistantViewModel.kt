@@ -7,7 +7,6 @@ import com.jarvisquest.app.ai.QwenAIService
 import com.jarvisquest.app.audio.AudioService
 import com.jarvisquest.app.audio.EnergyBasedVad
 import com.jarvisquest.app.controller.AssistantController
-import com.jarvisquest.app.controller.AssistantUiState
 import com.jarvisquest.app.model.ModelDownloader
 import com.jarvisquest.app.model.ModelManager
 import com.jarvisquest.app.model.ModelStatus
@@ -23,62 +22,39 @@ import kotlinx.coroutines.launch
 class AssistantViewModel(application: Application) : AndroidViewModel(application) {
     private val modelManager = ModelManager(application)
     private val modelDownloader = ModelDownloader(application)
-
     private val initialStt: SpeechToTextService = when (val status = modelManager.checkWhisperModel()) {
         is ModelStatus.Ready -> WhisperSpeechToTextService(status.path)
         is ModelStatus.Missing -> ModelMissingSpeechToTextService(status.expectedPath)
     }
-
     private var qwenModelPath = (modelManager.checkQwenModel() as? ModelStatus.Ready)?.path
-    private val aiService = QwenAIService(
-        qwenModelPath ?: (modelManager.checkQwenModel() as ModelStatus.Missing).expectedPath
-    )
-
+    private val aiService = QwenAIService(qwenModelPath ?: (modelManager.checkQwenModel() as ModelStatus.Missing).expectedPath)
     private val controller = AssistantController(
-        audioService = AudioService(application),
-        vad = EnergyBasedVad(),
-        initialStt = initialStt,
-        router = CommandRouter(),
-        aiService = aiService,
-        tts = AndroidTextToSpeechService(application),
-        scope = viewModelScope
+        audioService = AudioService(application), vad = EnergyBasedVad(), initialStt = initialStt,
+        router = CommandRouter(), aiService = aiService, tts = AndroidTextToSpeechService(application), scope = viewModelScope
     )
-
     val uiState: StateFlow<AssistantUiState> = controller.uiState
 
     init {
         viewModelScope.launch {
             controller.setModelWarning("Modellen controleren...")
-            val allModels = modelDownloader.ensureAllModels()
-            allModels.fold(
+            modelDownloader.ensureAllModels().fold(
                 onSuccess = { paths ->
-                    val whisper = WhisperSpeechToTextService(paths.first)
-                    controller.setSpeechToTextService(whisper)
-                    // Warm Whisper while the user is looking at the UI so the first
-                    // utterance does not pay the native model initialization cost.
-                    launch(Dispatchers.Default) { whisper.isAvailable() }
-
+                    controller.setSpeechToTextService(WhisperSpeechToTextService(paths.first))
+                    launch(Dispatchers.Default) { aiService.loadModel() }
                     if (qwenModelPath == null) qwenModelPath = paths.second
-                    aiService.loadModel().onFailure { error ->
-                        controller.setModelWarning("AI-model laden mislukt: ${error.message}")
-                    }
-                    if (qwenModelPath != null && controller.uiState.value.modelWarning == "Modellen controleren...") {
-                        controller.setModelWarning(null)
-                    }
+                    controller.setModelWarning(null)
                 },
-                onFailure = { error ->
-                    controller.setModelWarning("Model download mislukt: ${error.message}")
-                }
+                onFailure = { controller.setModelWarning("Model download mislukt: ${it.message}") }
             )
         }
     }
 
     fun onMicPermissionResult(granted: Boolean) = controller.onMicPermissionResult(granted)
-    fun toggleListening() {
-        if (controller.isListening()) controller.stopListening() else controller.startListening()
-    }
-    override fun onCleared() {
-        controller.release()
-        super.onCleared()
-    }
+    fun toggleListening() { if (controller.isListening()) controller.stopListening() else controller.startListening() }
+    fun beginExternalSpeech() = controller.beginExternalSpeech()
+    fun showExternalPartial(text: String) = controller.showExternalPartial(text)
+    fun processExternalTranscript(text: String) = controller.processExternalTranscript(text)
+    fun externalSpeechError(message: String) = controller.externalSpeechError(message)
+
+    override fun onCleared() { controller.release(); super.onCleared() }
 }
