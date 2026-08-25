@@ -10,25 +10,14 @@ sealed class SttError : Exception() {
     object NoSpeechDetected : SttError()
 }
 
-/**
- * Local speech-to-text abstraction. [com.jarvisquest.app.controller.AssistantController]
- * only depends on this interface, never on a concrete engine, so the
- * implementation can move from the Android system recognizer (Milestone 1,
- * used mainly for development on a phone that has Google's on-device
- * speech services) to an embedded whisper.cpp model (Milestone 2, the
- * implementation that is actually expected to work on Quest 3, which ships
- * without Google Mobile Services) without touching any caller.
- */
+/** Local speech-to-text abstraction. */
 interface SpeechToTextService {
-    /** True if this engine can plausibly transcribe right now (installed, licensed, language available). */
     fun isAvailable(): Boolean
-
-    /**
-     * Transcribes [pcm16Mono] (raw PCM16 mono samples at [sampleRateHz]).
-     * Returns the recognized text, or a [SttError] — never fabricated text.
-     */
     suspend fun transcribe(pcm16Mono: ShortArray, sampleRateHz: Int): Result<String>
 
-    /** Releases any engine resources (recognizer instances, native handles, ...). */
+    /** Optional low-latency partial transcription. Implementations may override this. */
+    suspend fun transcribePartial(pcm16Mono: ShortArray, sampleRateHz: Int): Result<String> =
+        transcribe(pcm16Mono, sampleRateHz)
+
     fun release()
 }
