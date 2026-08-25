@@ -2,7 +2,6 @@ package com.jarvisquest.app.controller
 
 import android.util.Log
 import com.jarvisquest.app.audio.AUDIO_SAMPLE_RATE_HZ
-import com.jarvisquest.app.audio.AUDIO_FRAME_SAMPLES
 import com.jarvisquest.app.audio.AudioService
 import com.jarvisquest.app.audio.AudioServiceError
 import com.jarvisquest.app.audio.VadEvent
@@ -24,8 +23,8 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 private const val TAG = "JarvisAssistant"
-private const val PARTIAL_INTERVAL_FRAMES = 60 // 1.2 s
 
+/** Reliable Quest voice pipeline: microphone -> VAD -> one Whisper decode -> router -> AI/TTS. */
 class AssistantController(
     private val audioService: AudioService,
     private val vad: VoiceActivityDetector,
@@ -39,11 +38,8 @@ class AssistantController(
     val uiState: StateFlow<AssistantUiState> = _uiState
     private var stt: SpeechToTextService = initialStt
     private var captureJob: Job? = null
-    private var partialJob: Job? = null
+    private var utteranceJob: Job? = null
     private var utteranceLatency: LatencyTracker? = null
-    private val liveSpeechFrames = ArrayList<ShortArray>()
-    private var framesSincePartial = 0
-    private var lastPartialTranscript = ""
 
     fun setSpeechToTextService(service: SpeechToTextService) {
         if (captureJob?.isActive == true) stopListening()
@@ -57,8 +53,7 @@ class AssistantController(
     fun isListening(): Boolean = captureJob?.isActive == true
 
     fun beginExternalSpeech() {
-        tts.stop()
-        _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null, assistantResponse = "")
+        tts.stop(); _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null, assistantResponse = "")
     }
     fun showExternalPartial(text: String) {
         if (text.isNotBlank()) _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, recognizedSpeech = text)
@@ -77,19 +72,16 @@ class AssistantController(
             _uiState.value = _uiState.value.copy(state = AssistantState.ERROR, errorMessage = "Microphone permission not granted.")
             return
         }
-        vad.reset(); resetLiveSpeech()
+        utteranceJob?.cancel()
+        vad.reset()
         _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null, assistantResponse = "")
         captureJob = audioService.captureFrames().onEach { handleFrame(it) }.catch { handleCaptureError(it) }.launchIn(scope)
     }
 
     fun stopListening() {
-        captureJob?.cancel(); captureJob = null; partialJob?.cancel(); partialJob = null
-        resetLiveSpeech(); tts.stop()
-        _uiState.value = _uiState.value.copy(state = AssistantState.IDLE)
-    }
-
-    private fun resetLiveSpeech() {
-        liveSpeechFrames.clear(); framesSincePartial = 0; lastPartialTranscript = ""
+        captureJob?.cancel(); captureJob = null
+        utteranceJob?.cancel(); utteranceJob = null
+        tts.stop(); _uiState.value = _uiState.value.copy(state = AssistantState.IDLE)
     }
 
     private fun handleCaptureError(error: Throwable) {
@@ -109,53 +101,17 @@ class AssistantController(
             is VadEvent.Silence -> Unit
             is VadEvent.SpeechStarted -> {
                 utteranceLatency = LatencyTracker().also { it.mark("speech_start") }
-                resetLiveSpeech(); liveSpeechFrames.add(frame); framesSincePartial = 1
-                _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING)
+                _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null)
             }
-            is VadEvent.SpeechContinuing -> {
-                liveSpeechFrames.add(frame)
-                framesSincePartial++
-                // Do not queue a second Whisper decode while one is still running.
-                // A slow decode used to stack behind the native mutex and could make
-                // the final transcript appear tens of seconds late.
-                if (framesSincePartial >= PARTIAL_INTERVAL_FRAMES && partialJob?.isActive != true) {
-                    framesSincePartial = 0
-                    launchPartialTranscription()
-                }
-            }
+            is VadEvent.SpeechContinuing -> Unit
             is VadEvent.SpeechEnded -> {
                 val latency = (utteranceLatency ?: LatencyTracker()).also { it.mark("speech_end") }
                 utteranceLatency = null
-                liveSpeechFrames.add(frame)
-                val fastTranscript = lastPartialTranscript.trim()
-                // Never start a second full Whisper pass while a partial decode is
-                // still running. The old implementation could block on nativeLock.
-                if (fastTranscript.isNotBlank()) {
-                    partialJob?.cancel()
-                    resetLiveSpeech()
-                    latency.mark("stt_start"); latency.mark("stt_end")
-                    _uiState.value = _uiState.value.copy(recognizedSpeech = fastTranscript, state = AssistantState.THINKING)
-                    scope.launch { routeAndRespond(fastTranscript, latency) }
-                } else {
-                    val utterance = event.utterance.copyOf()
-                    partialJob?.cancel()
-                    resetLiveSpeech()
-                    scope.launch { processUtterance(utterance, latency) }
-                }
-            }
-        }
-    }
-
-    private fun launchPartialTranscription() {
-        val snapshot = liveSpeechFrames.flatMapTo(ArrayList()) { it.asIterable() }
-        if (snapshot.size < AUDIO_FRAME_SAMPLES * 12) return // at least 240 ms
-        partialJob = scope.launch {
-            val result = stt.transcribePartial(snapshot.toShortArray(), AUDIO_SAMPLE_RATE_HZ)
-            result.onSuccess { transcript ->
-                if (transcript.isNotBlank()) {
-                    lastPartialTranscript = transcript
-                    _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, recognizedSpeech = transcript)
-                }
+                // One and only one Whisper inference per utterance. Rolling partial
+                // inference was removed because it could monopolize the native
+                // Whisper context and make the final transcript arrive very late.
+                utteranceJob?.cancel()
+                utteranceJob = scope.launch { processUtterance(event.utterance, latency) }
             }
         }
     }
@@ -167,10 +123,15 @@ class AssistantController(
         latency.mark("stt_end")
         result.fold(
             onSuccess = { transcript ->
-                _uiState.value = _uiState.value.copy(recognizedSpeech = transcript, assistantResponse = "", state = AssistantState.THINKING)
-                routeAndRespond(transcript, latency)
+                if (transcript.isBlank()) {
+                    _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = "No speech detected.", latencyReport = buildLatencyReport(latency))
+                } else {
+                    // Publish You said immediately after the single STT pass, then route.
+                    _uiState.value = _uiState.value.copy(recognizedSpeech = transcript, assistantResponse = "", state = AssistantState.THINKING)
+                    routeAndRespond(transcript, latency)
+                }
             },
-            onFailure = { error -> _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, assistantResponse = error.message ?: "Speech-to-text failed.", latencyReport = buildLatencyReport(latency)) }
+            onFailure = { error -> _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = error.message ?: "Speech-to-text failed.", latencyReport = buildLatencyReport(latency)) }
         )
     }
 
