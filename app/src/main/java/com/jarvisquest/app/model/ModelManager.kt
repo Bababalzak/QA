@@ -13,7 +13,7 @@ class ModelManager(context: Context) {
     private val whisperModelFile: File = File(modelsDir, WHISPER_MODEL_FILENAME)
     private val qwenModelFile: File = File(modelsDir, QWEN_MODEL_FILENAME)
 
-    private val minPlausibleWhisperBytes = 20_000_000L
+    private val minPlausibleWhisperBytes = 10_000_000L
     private val minPlausibleQwenBytes = 100_000_000L
 
     fun checkWhisperModel(): ModelStatus =
@@ -27,7 +27,8 @@ class ModelManager(context: Context) {
         else ModelStatus.Missing(qwenModelFile.absolutePath)
 
     companion object {
-        const val WHISPER_MODEL_FILENAME = "ggml-base.bin"
+        // Tiny Whisper is much faster on Quest 3 and is sufficient for the prototype.
+        const val WHISPER_MODEL_FILENAME = "ggml-tiny.bin"
         // Qwen3 1.7B Instruct, GGUF Q4_K_M. Keep this outside the APK.
         const val QWEN_MODEL_FILENAME = "Qwen3-1.7B-Q4_K_M.gguf"
     }
