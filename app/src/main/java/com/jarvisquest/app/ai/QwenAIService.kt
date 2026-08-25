@@ -6,7 +6,7 @@ import java.io.File
 
 /** Local Qwen3 GGUF inference through llama.cpp JNI. */
 class QwenAIService(private val modelPath: String) : AIService {
-    private var handle: Long = 0L
+    @Volatile private var handle: Long = 0L
 
     override fun isReady(): Boolean = handle != 0L
 
@@ -29,19 +29,28 @@ class QwenAIService(private val modelPath: String) : AIService {
             if (loaded.isFailure) return@withContext Result.failure(loaded.exceptionOrNull()!!)
         }
 
+        val currentHandle = handle
+        if (currentHandle == 0L) return@withContext Result.failure(AIServiceError.InferenceFailed("AI model is not ready"))
+
         runCatching {
-            val formatted = "<|im_start|>system\nYou are Quest Assistant, a concise helpful AI assistant running locally on a Meta Quest 3. Keep replies short.\n<|im_end|>\n<|im_start|>user\n$prompt\n<|im_end|>\n<|im_start|>assistant\n"
-            val reply = LlamaNative.nativeGenerate(handle, formatted, 64)
+            // Qwen3 defaults to a reasoning/thinking phase. Explicitly disable it for
+            // voice mode so a short request produces an answer instead of spending the
+            // whole output budget on hidden reasoning.
+            val formatted = "<|im_start|>system\nYou are Quest Assistant, a concise helpful AI assistant running locally on a Meta Quest 3. Answer in one or two short sentences. Do not explain your reasoning.\n<|im_end|>\n<|im_start|>user\n$prompt /no_think\n<|im_end|>\n<|im_start|>assistant\n"
+            val reply = LlamaNative.nativeGenerate(currentHandle, formatted, 96)
                 ?: error("llama.cpp returned no response")
-            onToken(reply)
-            reply.trim()
+            val cleaned = reply.trim()
+            if (cleaned.isEmpty()) error("Qwen returned an empty response")
+            onToken(cleaned)
+            cleaned
         }.fold({ Result.success(it) }, { Result.failure(AIServiceError.InferenceFailed(it.message ?: "Inference failed")) })
     }
 
     override fun release() {
-        if (handle != 0L) {
-            LlamaNative.nativeRelease(handle)
+        val currentHandle = handle
+        if (currentHandle != 0L) {
             handle = 0L
+            LlamaNative.nativeRelease(currentHandle)
         }
     }
 }
