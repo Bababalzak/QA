@@ -56,7 +56,7 @@ Java_com_jarvisquest_app_stt_WhisperNative_nativeTranscribe(
         return nullptr;
     }
 
-    jsize numSamples = env->GetArrayLength(pcmFloat);
+    const jsize numSamples = env->GetArrayLength(pcmFloat);
     if (numSamples <= 0 || numSamples > MAX_UTTERANCE_SAMPLES) {
         LOGE("nativeTranscribe: invalid sample count %d (max %d)", numSamples, MAX_UTTERANCE_SAMPLES);
         return nullptr;
@@ -71,17 +71,22 @@ Java_com_jarvisquest_app_stt_WhisperNative_nativeTranscribe(
     whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     params.language = "auto";
     params.translate = false;
-    params.single_segment = true;
+    params.single_segment = false;
     params.no_context = true;
+    params.no_timestamps = true;
     params.print_progress = false;
     params.print_realtime = false;
     params.print_timestamps = false;
     params.print_special = false;
+    params.suppress_blank = true;
+    params.temperature = 0.0f;
+    params.temperature_inc = 0.0f;
     unsigned int hw = std::thread::hardware_concurrency();
     params.n_threads = std::max(1, std::min(4, static_cast<int>(hw == 0 ? 2 : hw)));
 
-    LOGI("nativeTranscribe: running whisper_full on %d samples", numSamples);
-    int rc = whisper_full(ctx, params, samples, numSamples);
+    LOGI("nativeTranscribe: running whisper_full on %d samples (%0.2fs)",
+         numSamples, static_cast<double>(numSamples) / WHISPER_SAMPLE_RATE);
+    const int rc = whisper_full(ctx, params, samples, numSamples);
     env->ReleaseFloatArrayElements(pcmFloat, samples, JNI_ABORT);
 
     if (rc != 0) {
@@ -96,6 +101,14 @@ Java_com_jarvisquest_app_stt_WhisperNative_nativeTranscribe(
         const char *segment = whisper_full_get_segment_text(ctx, i);
         if (segment != nullptr) text += segment;
     }
+
+    // Return a clean transcript; Kotlin will treat an empty result as no speech.
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\n' || text.back() == '\r' || text.back() == '\t')) text.pop_back();
+    size_t first = 0;
+    while (first < text.size() && (text[first] == ' ' || text[first] == '\n' || text[first] == '\r' || text[first] == '\t')) ++first;
+    if (first > 0) text.erase(0, first);
+
+    LOGI("nativeTranscribe: transcript length=%zu", text.size());
     return env->NewStringUTF(text.c_str());
 }
 
