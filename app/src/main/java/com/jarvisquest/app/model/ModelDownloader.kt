@@ -6,6 +6,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 class ModelDownloader(private val context: Context) {
     companion object {
@@ -20,6 +22,7 @@ class ModelDownloader(private val context: Context) {
         target.parentFile?.mkdirs()
         val part = File(target.parentFile, "${target.name}.part")
         runCatching {
+            if (part.exists()) part.delete()
             val connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20_000
                 readTimeout = 120_000
@@ -37,16 +40,26 @@ class ModelDownloader(private val context: Context) {
                             if (count < 0) break
                             output.write(buffer, 0, count)
                         }
+                        output.flush()
                     }
                 }
             } finally {
                 connection.disconnect()
             }
-            if (part.length() < minimumBytes) error("Downloaded file is incomplete")
+
+            if (part.length() < minimumBytes) error("Downloaded file is incomplete (${part.length()} bytes)")
             if (target.exists()) target.delete()
-            check(part.renameTo(target)) { "Could not finalize download" }
+
+            // File.renameTo() can fail on Android storage even when the download succeeded.
+            // Use the NIO move API and verify the final file before reporting success.
+            Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            check(target.exists() && target.length() >= minimumBytes) {
+                "Could not finalize download"
+            }
             target.absolutePath
-        }.onFailure { part.delete() }
+        }.onFailure {
+            part.delete()
+        }
     }
 
     suspend fun ensureQwenModel(): Result<String> = withContext(Dispatchers.IO) {
