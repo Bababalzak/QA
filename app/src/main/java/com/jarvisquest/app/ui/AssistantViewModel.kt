@@ -7,6 +7,7 @@ import com.jarvisquest.app.ai.QwenAIService
 import com.jarvisquest.app.audio.AudioService
 import com.jarvisquest.app.audio.EnergyBasedVad
 import com.jarvisquest.app.controller.AssistantController
+import com.jarvisquest.app.controller.AssistantUiState
 import com.jarvisquest.app.model.ModelManager
 import com.jarvisquest.app.model.ModelStatus
 import com.jarvisquest.app.router.CommandRouter
