@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <algorithm>
 #include <string>
+#include <thread>
 #include <vector>
 #include "llama.h"
 
@@ -42,7 +43,8 @@ Java_com_jarvisquest_app_ai_LlamaNative_nativeInit(JNIEnv *env, jobject, jstring
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = 2048;
     cp.n_batch = 512;
-    cp.n_threads = std::max(1, std::min(4, (int)std::thread::hardware_concurrency()));
+    const unsigned hw = std::thread::hardware_concurrency();
+    cp.n_threads = std::max(1, std::min(4, (int)(hw == 0 ? 2 : hw)));
     cp.n_threads_batch = cp.n_threads;
 
     llama_context *ctx = llama_init_from_model(model, cp);
