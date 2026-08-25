@@ -48,16 +48,28 @@ Java_com_jarvisquest_app_ai_LlamaNative_nativeGenerate(JNIEnv *env, jobject, jlo
     llama_memory_clear(llama_get_memory(h->ctx), true);
     llama_batch batch = llama_batch_get_one(tokens.data(), (int)tokens.size());
     if (llama_decode(h->ctx, batch) != 0) return nullptr;
-    const int limit = std::max(1, std::min((int)maxTokens, 64));
-    std::string result; result.reserve(limit * 4);
+
+    // maxTokens == 0 means no application-level output cap. The model stops at
+    // EOS, while llama.cpp's context size remains the hard technical boundary.
+    const int limit = maxTokens > 0 ? maxTokens : 1024;
+    std::string result;
+    result.reserve(std::min(limit, 256) * 4);
     llama_sampler_chain_params sp = llama_sampler_chain_default_params();
-    llama_sampler *sampler = llama_sampler_chain_init(sp); llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+    llama_sampler *sampler = llama_sampler_chain_init(sp);
+    if (!sampler) return nullptr;
+    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+
     for (int i = 0; i < limit; ++i) {
-        llama_token tok = llama_sampler_sample(sampler, h->ctx, -1); if (llama_vocab_is_eog(h->vocab, tok)) break;
-        char buf[256]; const int len = llama_token_to_piece(h->vocab, tok, buf, sizeof(buf), 0, true); if (len > 0) result.append(buf, len);
-        batch = llama_batch_get_one(&tok, 1); if (llama_decode(h->ctx, batch) != 0) break;
+        llama_token tok = llama_sampler_sample(sampler, h->ctx, -1);
+        if (llama_vocab_is_eog(h->vocab, tok)) break;
+        char buf[256];
+        const int len = llama_token_to_piece(h->vocab, tok, buf, sizeof(buf), 0, true);
+        if (len > 0) result.append(buf, len);
+        batch = llama_batch_get_one(&tok, 1);
+        if (llama_decode(h->ctx, batch) != 0) break;
     }
-    llama_sampler_free(sampler); return env->NewStringUTF(result.c_str());
+    llama_sampler_free(sampler);
+    return env->NewStringUTF(result.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL
