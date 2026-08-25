@@ -53,7 +53,7 @@ class AssistantController(
 
     fun beginExternalSpeech() {
         tts.stop()
-        _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null)
+        _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null, assistantResponse = "")
     }
 
     fun showExternalPartial(text: String) {
@@ -63,7 +63,7 @@ class AssistantController(
     fun processExternalTranscript(transcript: String) {
         if (transcript.isBlank()) return
         val latency = LatencyTracker().also { it.mark("speech_start"); it.mark("speech_end"); it.mark("stt_start"); it.mark("stt_end") }
-        _uiState.value = _uiState.value.copy(state = AssistantState.THINKING, recognizedSpeech = transcript, errorMessage = null)
+        _uiState.value = _uiState.value.copy(state = AssistantState.THINKING, recognizedSpeech = transcript, assistantResponse = "", errorMessage = null)
         scope.launch { routeAndRespond(transcript, latency) }
     }
 
@@ -78,7 +78,7 @@ class AssistantController(
             return
         }
         vad.reset()
-        _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null)
+        _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null, assistantResponse = "")
         captureJob = audioService.captureFrames().onEach { handleFrame(it) }.catch { handleCaptureError(it) }.launchIn(scope)
     }
 
@@ -121,7 +121,11 @@ class AssistantController(
         val result = stt.transcribe(utterance, AUDIO_SAMPLE_RATE_HZ)
         latency.mark("stt_end")
         result.fold(
-            onSuccess = { routeAndRespond(it, latency) },
+            onSuccess = { transcript ->
+                // Publish the transcript immediately before doing any LLM work.
+                _uiState.value = _uiState.value.copy(recognizedSpeech = transcript, assistantResponse = "", state = AssistantState.THINKING)
+                routeAndRespond(transcript, latency)
+            },
             onFailure = { error -> _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, assistantResponse = error.message ?: "Speech-to-text failed.", latencyReport = buildLatencyReport(latency)) }
         )
     }
@@ -139,10 +143,22 @@ class AssistantController(
             }
             is RouteResult.NeedsAI -> {
                 latency.mark("llm_start")
-                val result = aiService.generate(route.prompt)
+                val streamedText = StringBuilder()
+                val result = aiService.generate(route.prompt) { token ->
+                    streamedText.append(token)
+                    // Qwen output is now visible token-by-token instead of waiting
+                    // for the entire generation to finish.
+                    _uiState.value = _uiState.value.copy(
+                        state = AssistantState.THINKING,
+                        assistantResponse = streamedText.toString()
+                    )
+                }
                 latency.mark("llm_end")
                 result.fold(
-                    onSuccess = { reply -> _uiState.value = _uiState.value.copy(assistantResponse = reply); speak(reply, latency) },
+                    onSuccess = { reply ->
+                        _uiState.value = _uiState.value.copy(assistantResponse = reply)
+                        speak(reply, latency)
+                    },
                     onFailure = { error -> _uiState.value = _uiState.value.copy(assistantResponse = error.message ?: "The local model isn't ready yet.") }
                 )
                 _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, latencyReport = buildLatencyReport(latency))
