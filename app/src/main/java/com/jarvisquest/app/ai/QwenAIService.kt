@@ -1,6 +1,5 @@
 package com.jarvisquest.app.ai
 
-import com.jarvisquest.app.model.ModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -31,8 +30,8 @@ class QwenAIService(private val modelPath: String) : AIService {
         }
 
         runCatching {
-            val formatted = "<|im_start|>system\nYou are Quest Assistant, a concise helpful AI assistant running locally on a Meta Quest 3.\n<|im_end|>\n<|im_start|>user\n$prompt\n<|im_end|>\n<|im_start|>assistant\n"
-            val reply = LlamaNative.nativeGenerate(handle, formatted, 256)
+            val formatted = "<|im_start|>system\nYou are Quest Assistant, a concise helpful AI assistant running locally on a Meta Quest 3. Keep replies short.\n<|im_end|>\n<|im_start|>user\n$prompt\n<|im_end|>\n<|im_start|>assistant\n"
+            val reply = LlamaNative.nativeGenerate(handle, formatted, 64)
                 ?: error("llama.cpp returned no response")
             onToken(reply)
             reply.trim()
