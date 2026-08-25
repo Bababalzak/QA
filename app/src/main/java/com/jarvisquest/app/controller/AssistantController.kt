@@ -45,6 +45,9 @@ class AssistantController(
         stt.release()
         stt = service
         _uiState.value = _uiState.value.copy(modelWarning = null)
+        scope.launch {
+            if (!service.isAvailable()) Log.w(TAG, "Whisper warm-up failed")
+        }
     }
 
     fun onMicPermissionResult(granted: Boolean) {
