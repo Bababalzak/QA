@@ -20,6 +20,7 @@ Java_com_jarvisquest_app_stt_WhisperNative_nativeInit(JNIEnv *env, jobject, jstr
     const char *path = env->GetStringUTFChars(modelPath, nullptr);
     if (path == nullptr) return 0;
 
+    LOGI("nativeInit: loading model %s", path);
     whisper_context_params cparams = whisper_context_default_params();
     cparams.use_gpu = false;
     struct whisper_context *ctx = whisper_init_from_file_with_params(path, cparams);
@@ -45,8 +46,6 @@ Java_com_jarvisquest_app_stt_WhisperNative_nativeTranscribe(
     if (samples == nullptr) return nullptr;
 
     whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    // Dutch is the primary language for this assistant. Explicit language
-    // avoids the extra language-detection pass on short Quest utterances.
     params.language = "nl";
     params.translate = false;
     params.single_segment = false;
@@ -60,11 +59,11 @@ Java_com_jarvisquest_app_stt_WhisperNative_nativeTranscribe(
     params.temperature = 0.0f;
     params.temperature_inc = 0.0f;
 
-    unsigned int hw = std::thread::hardware_concurrency();
-    params.n_threads = std::max(1, std::min(4, static_cast<int>(hw == 0 ? 2 : hw)));
+    const unsigned int hw = std::thread::hardware_concurrency();
+    params.n_threads = std::max(1, std::min(8, static_cast<int>(hw == 0 ? 4 : hw)));
 
-    LOGI("nativeTranscribe: %d samples (%0.2fs)", numSamples,
-         static_cast<double>(numSamples) / WHISPER_SAMPLE_RATE);
+    LOGI("nativeTranscribe: %d samples (%.2fs), threads=%d", numSamples,
+         static_cast<double>(numSamples) / WHISPER_SAMPLE_RATE, params.n_threads);
     const int rc = whisper_full(ctx, params, samples, numSamples);
     env->ReleaseFloatArrayElements(pcmFloat, samples, JNI_ABORT);
     if (rc != 0) {
