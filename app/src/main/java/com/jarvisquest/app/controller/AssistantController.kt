@@ -27,7 +27,7 @@ private const val TAG = "JarvisAssistant"
 class AssistantController(
     private val audioService: AudioService,
     private val vad: VoiceActivityDetector,
-    private val stt: SpeechToTextService,
+    initialStt: SpeechToTextService,
     private val router: CommandRouter,
     private val aiService: AIService,
     private val tts: TextToSpeechService,
@@ -36,19 +36,21 @@ class AssistantController(
     private val _uiState = MutableStateFlow(AssistantUiState())
     val uiState: StateFlow<AssistantUiState> = _uiState
 
+    private var stt: SpeechToTextService = initialStt
     private var captureJob: Job? = null
-
-    // Created the instant VAD reports SpeechStarted so the latency report
-    // covers real speech-start -> speech-end -> STT -> response timing
-    // (Phase 8: "microphone start, speech start, speech end, Whisper
-    // start, Whisper end, total STT latency"), not just the STT portion.
     private var utteranceLatency: LatencyTracker? = null
+
+    fun setSpeechToTextService(service: SpeechToTextService) {
+        if (captureJob?.isActive == true) stopListening()
+        stt.release()
+        stt = service
+        _uiState.value = _uiState.value.copy(modelWarning = null)
+    }
 
     fun onMicPermissionResult(granted: Boolean) {
         _uiState.value = _uiState.value.copy(micPermissionGranted = granted)
     }
 
-    /** Set once at startup from [com.jarvisquest.app.model.ModelManager]'s check — shown as a persistent banner. */
     fun setModelWarning(message: String?) {
         _uiState.value = _uiState.value.copy(modelWarning = message)
     }
@@ -58,19 +60,11 @@ class AssistantController(
     fun startListening() {
         if (isListening()) return
         if (!audioService.hasRecordAudioPermission()) {
-            _uiState.value = _uiState.value.copy(
-                state = AssistantState.ERROR,
-                errorMessage = "Microphone permission not granted."
-            )
+            _uiState.value = _uiState.value.copy(state = AssistantState.ERROR, errorMessage = "Microphone permission not granted.")
             return
         }
-
         vad.reset()
-        _uiState.value = _uiState.value.copy(
-            state = AssistantState.LISTENING,
-            errorMessage = null
-        )
-
+        _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = null)
         captureJob = audioService.captureFrames()
             .onEach { frame -> handleFrame(frame) }
             .catch { error -> handleCaptureError(error) }
@@ -105,13 +99,9 @@ class AssistantController(
             }
             is VadEvent.SpeechContinuing -> Unit
             is VadEvent.SpeechEnded -> {
-                // Falls back to a fresh tracker if SpeechStarted was somehow
-                // missed (e.g. VAD implementation swapped later) rather than
-                // crashing on a null — the report is just less complete.
                 val latency = (utteranceLatency ?: LatencyTracker()).also { it.mark("speech_end") }
                 utteranceLatency = null
-                val utterance = event.utterance
-                scope.launch { processUtterance(utterance, latency) }
+                scope.launch { processUtterance(event.utterance, latency) }
             }
         }
     }
@@ -119,24 +109,17 @@ class AssistantController(
     private suspend fun processUtterance(utterance: ShortArray, latency: LatencyTracker) {
         latency.mark("stt_start")
         _uiState.value = _uiState.value.copy(state = AssistantState.THINKING)
-
         val transcriptResult = stt.transcribe(utterance, AUDIO_SAMPLE_RATE_HZ)
         latency.mark("stt_end")
 
         transcriptResult.onFailure { error ->
             Log.w(TAG, "STT unavailable: ${error.message}")
-            _uiState.value = _uiState.value.copy(
-                state = AssistantState.LISTENING,
-                recognizedSpeech = "",
-                assistantResponse = error.message ?: "Speech-to-text failed.",
-                latencyReport = buildLatencyReport(latency)
-            )
+            _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, recognizedSpeech = "", assistantResponse = error.message ?: "Speech-to-text failed.", latencyReport = buildLatencyReport(latency))
             return
         }
 
         val transcript = transcriptResult.getOrThrow()
         _uiState.value = _uiState.value.copy(recognizedSpeech = transcript)
-
         latency.mark("router_start")
         val route = router.route(transcript)
         latency.mark("router_end")
@@ -145,31 +128,17 @@ class AssistantController(
             is RouteResult.DirectAction -> {
                 applyDirectAction(route.action)
                 if (route.spokenAck.isNotBlank()) speak(route.spokenAck, latency)
-                _uiState.value = _uiState.value.copy(
-                    state = AssistantState.LISTENING,
-                    assistantResponse = route.spokenAck,
-                    latencyReport = buildLatencyReport(latency)
-                )
+                _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, assistantResponse = route.spokenAck, latencyReport = buildLatencyReport(latency))
             }
             is RouteResult.NeedsAI -> {
                 latency.mark("llm_start")
                 val aiResult = aiService.generate(route.prompt)
                 latency.mark("llm_end")
-
                 aiResult.fold(
-                    onSuccess = { reply ->
-                        _uiState.value = _uiState.value.copy(assistantResponse = reply)
-                        speak(reply, latency)
-                    },
-                    onFailure = { error ->
-                        val message = error.message ?: "The local model isn't ready yet."
-                        _uiState.value = _uiState.value.copy(assistantResponse = message)
-                    }
+                    onSuccess = { reply -> _uiState.value = _uiState.value.copy(assistantResponse = reply); speak(reply, latency) },
+                    onFailure = { error -> _uiState.value = _uiState.value.copy(assistantResponse = error.message ?: "The local model isn't ready yet.") }
                 )
-                _uiState.value = _uiState.value.copy(
-                    state = AssistantState.LISTENING,
-                    latencyReport = buildLatencyReport(latency)
-                )
+                _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, latencyReport = buildLatencyReport(latency))
             }
         }
     }
@@ -184,25 +153,17 @@ class AssistantController(
     private fun applyDirectAction(action: JarvisAction) {
         when (action) {
             JarvisAction.STOP_SPEAKING -> tts.stop()
-            JarvisAction.CLEAR_CONVERSATION -> {
-                _uiState.value = _uiState.value.copy(recognizedSpeech = "", assistantResponse = "")
-            }
+            JarvisAction.CLEAR_CONVERSATION -> _uiState.value = _uiState.value.copy(recognizedSpeech = "", assistantResponse = "")
         }
     }
 
     private fun buildLatencyReport(latency: LatencyTracker): String {
         val stages = buildList {
-            if (latency.durationMs("speech_start", "speech_end") != null) {
-                add("Speech" to ("speech_start" to "speech_end"))
-            }
+            if (latency.durationMs("speech_start", "speech_end") != null) add("Speech" to ("speech_start" to "speech_end"))
             add("STT" to ("stt_start" to "stt_end"))
             add("Router" to ("router_start" to "router_end"))
-            if (latency.durationMs("llm_start", "llm_end") != null) {
-                add("LLM" to ("llm_start" to "llm_end"))
-            }
-            if (latency.durationMs("tts_start", "tts_end") != null) {
-                add("TTS" to ("tts_start" to "tts_end"))
-            }
+            if (latency.durationMs("llm_start", "llm_end") != null) add("LLM" to ("llm_start" to "llm_end"))
+            if (latency.durationMs("tts_start", "tts_end") != null) add("TTS" to ("tts_start" to "tts_end"))
         }
         return latency.summary(stages)
     }
