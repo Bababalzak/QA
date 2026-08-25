@@ -33,11 +33,11 @@ class QwenAIService(private val modelPath: String) : AIService {
         if (currentHandle == 0L) return@withContext Result.failure(AIServiceError.InferenceFailed("AI model is not ready"))
 
         runCatching {
-            // Qwen3 defaults to a reasoning/thinking phase. Explicitly disable it for
-            // voice mode so a short request produces an answer instead of spending the
-            // whole output budget on hidden reasoning.
-            val formatted = "<|im_start|>system\nYou are Quest Assistant, a concise helpful AI assistant running locally on a Meta Quest 3. Answer in one or two short sentences. Do not explain your reasoning.\n<|im_end|>\n<|im_start|>user\n$prompt /no_think\n<|im_end|>\n<|im_start|>assistant\n"
-            val reply = LlamaNative.nativeGenerate(currentHandle, formatted, 96)
+            // Voice mode disables Qwen3's reasoning phase, but deliberately imposes
+            // NO application-level answer/token limit. Generation ends at EOS or the
+            // model context limit in the native layer.
+            val formatted = "<|im_start|>system\nYou are Quest Assistant, a helpful AI assistant running locally on a Meta Quest 3. Answer naturally and directly. Do not explain your reasoning.\n<|im_end|>\n<|im_start|>user\n/no_think\n$prompt\n<|im_end|>\n<|im_start|>assistant\n"
+            val reply = LlamaNative.nativeGenerate(currentHandle, formatted, 0)
                 ?: error("llama.cpp returned no response")
             val cleaned = reply.trim()
             if (cleaned.isEmpty()) error("Qwen returned an empty response")
