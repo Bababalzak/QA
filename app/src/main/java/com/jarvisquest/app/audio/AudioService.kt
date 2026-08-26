@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -15,6 +16,8 @@ import kotlinx.coroutines.flow.callbackFlow
 const val AUDIO_SAMPLE_RATE_HZ = 16_000
 const val AUDIO_FRAME_MS = 20
 const val AUDIO_FRAME_SAMPLES = AUDIO_SAMPLE_RATE_HZ * AUDIO_FRAME_MS / 1000 // 320 samples
+
+private const val TAG = "AudioService"
 
 sealed class AudioServiceError : Exception() {
     object PermissionDenied : AudioServiceError()
@@ -101,7 +104,10 @@ class AudioService(private val context: Context) {
                     continue
                 }
                 val toSend = if (read == frame.size) frame.copyOf() else frame.copyOf(read)
-                trySend(toSend)
+                val result = trySend(toSend)
+                if (result.isFailure && !isClosedForSend) {
+                    Log.w(TAG, "Dropping microphone frame because the audio channel is backpressured")
+                }
             }
         }, "AudioService-Capture")
         readThread.priority = Thread.MAX_PRIORITY
