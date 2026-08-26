@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 
 private const val TAG = "JarvisAssistant"
 
@@ -40,6 +41,7 @@ class AssistantController(
     private var captureJob: Job? = null
     private var utteranceJob: Job? = null
     private var utteranceLatency: LatencyTracker? = null
+    private val sttMutex = Mutex()
 
     fun setSpeechToTextService(service: SpeechToTextService) {
         if (captureJob?.isActive == true) stopListening()
@@ -107,11 +109,22 @@ class AssistantController(
             is VadEvent.SpeechEnded -> {
                 val latency = (utteranceLatency ?: LatencyTracker()).also { it.mark("speech_end") }
                 utteranceLatency = null
-                // One and only one Whisper inference per utterance. Rolling partial
-                // inference was removed because it could monopolize the native
-                // Whisper context and make the final transcript arrive very late.
-                utteranceJob?.cancel()
-                utteranceJob = scope.launch { processUtterance(event.utterance, latency) }
+                if (utteranceJob?.isActive == true) {
+                    Log.w(TAG, "Dropping overlapping utterance while Whisper is still running")
+                    return
+                }
+                val utterance = event.utterance.copyOf()
+                utteranceJob = scope.launch {
+                    if (!sttMutex.tryLock()) {
+                        Log.w(TAG, "Whisper mutex busy; dropping overlapping utterance")
+                        return@launch
+                    }
+                    try {
+                        processUtterance(utterance, latency)
+                    } finally {
+                        sttMutex.unlock()
+                    }
+                }
             }
         }
     }
@@ -126,7 +139,6 @@ class AssistantController(
                 if (transcript.isBlank()) {
                     _uiState.value = _uiState.value.copy(state = AssistantState.LISTENING, errorMessage = "No speech detected.", latencyReport = buildLatencyReport(latency))
                 } else {
-                    // Publish You said immediately after the single STT pass, then route.
                     _uiState.value = _uiState.value.copy(recognizedSpeech = transcript, assistantResponse = "", state = AssistantState.THINKING)
                     routeAndRespond(transcript, latency)
                 }
